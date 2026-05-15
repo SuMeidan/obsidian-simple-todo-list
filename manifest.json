@@ -2,9 +2,9 @@
   "id": "simple-todo-list",
   "name": "Simple Todo List",
   "version": "1.0.0",
-  "minAppVersion": "1.0.0",
+  "minAppVersion": "0.15.0",
   "description": "A clean todo list with planning board. Write tasks, set deadlines, set priority, and drag tasks into date zones.",
-  "author": "SeleneSu",
-  "authorUrl": "https://github.com/SeleneSu",
+  "author": "Selene Su",
+  "authorUrl": "https://github.com/SuMeidan",
   "isDesktopOnly": false
 }

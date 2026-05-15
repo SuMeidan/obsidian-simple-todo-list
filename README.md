@@ -55,7 +55,7 @@ A clean and simple todo list plugin for [Obsidian](https://obsidian.md). No clut
 
 ## Author
 
-**SeleneSu** — [GitHub](https://github.com/SeleneSu)
+**Selene Su** — [GitHub](https://github.com/SuMeidan)
 
 ## License
 
@@ -120,7 +120,7 @@ MIT
 
 ## 作者
 
-**SeleneSu** — [GitHub](https://github.com/SeleneSu)
+**Selene Su** — [GitHub](https://github.com/SuMeidan)
 
 ## 许可证
 
