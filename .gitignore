@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Local Obsidian plugin folder (for testing)
+SimpleToDoList/
+
+# Build artifacts
+*.js.map
+
+# Lock file (not needed for plugin consumers)
+package-lock.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
