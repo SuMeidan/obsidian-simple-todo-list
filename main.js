@@ -79,6 +79,14 @@ function formatZoneHeader(zone) {
 function logError(message, error) {
   console.error(message, error);
 }
+function loadSavedSettings(data) {
+  const saved = data && typeof data === "object" ? data : {};
+  return {
+    todos: Array.isArray(saved.todos) ? saved.todos : [],
+    trash: Array.isArray(saved.trash) ? saved.trash : [],
+    boardZones: Array.isArray(saved.boardZones) ? saved.boardZones : []
+  };
+}
 var TodoModal = class extends import_obsidian.Modal {
   constructor(app, item, onSubmit, isEdit = false) {
     super(app);
@@ -745,37 +753,38 @@ var SimpleTodoPlugin = class extends import_obsidian.Plugin {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
   }
-  async onload() {
-    await this.loadSettings();
-    this.registerView(VIEW_TYPE_TODO, (leaf) => new TodoView(leaf, this));
-    this.addRibbonIcon("check-square", "\u5F85\u529E\u6E05\u5355", () => {
-      void this.activateView().catch((error) => logError("Failed to activate todo view", error));
-    });
-    this.addCommand({
-      id: "open-todo-list",
-      name: "\u6253\u5F00\u5F85\u529E\u6E05\u5355",
-      callback: () => {
+  onload() {
+    void this.loadSettings().then(() => {
+      this.registerView(VIEW_TYPE_TODO, (leaf) => new TodoView(leaf, this));
+      this.addRibbonIcon("check-square", "\u5F85\u529E\u6E05\u5355", () => {
         void this.activateView().catch((error) => logError("Failed to activate todo view", error));
-      }
-    });
-    this.addCommand({
-      id: "add-todo-item",
-      name: "\u65B0\u5EFA\u5F85\u529E\u4E8B\u9879",
-      callback: () => {
-        void this.activateView().then(() => {
-          var _a;
-          const view = (_a = this.app.workspace.getLeavesOfType(VIEW_TYPE_TODO)[0]) == null ? void 0 : _a.view;
-          if (view)
-            view.openAddTaskModal();
-        }).catch((error) => logError("Failed to open add task modal", error));
-      }
-    });
-    this.addSettingTab(new TodoSettingTab(this.app, this));
+      });
+      this.addCommand({
+        id: "open-todo-list",
+        name: "\u6253\u5F00\u5F85\u529E\u6E05\u5355",
+        callback: () => {
+          void this.activateView().catch((error) => logError("Failed to activate todo view", error));
+        }
+      });
+      this.addCommand({
+        id: "add-todo-item",
+        name: "\u65B0\u5EFA\u5F85\u529E\u4E8B\u9879",
+        callback: () => {
+          void this.activateView().then(() => {
+            var _a;
+            const view = (_a = this.app.workspace.getLeavesOfType(VIEW_TYPE_TODO)[0]) == null ? void 0 : _a.view;
+            if (view)
+              view.openAddTaskModal();
+          }).catch((error) => logError("Failed to open add task modal", error));
+        }
+      });
+      this.addSettingTab(new TodoSettingTab(this.app, this));
+    }).catch((error) => logError("Failed to load todo plugin", error));
   }
-  async onunload() {
+  onunload() {
   }
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = loadSavedSettings(await this.loadData());
     if (!this.settings.boardZones)
       this.settings.boardZones = [];
     this.settings.boardZones.forEach((z, i) => {
@@ -791,8 +800,7 @@ var SimpleTodoPlugin = class extends import_obsidian.Plugin {
     let leaf = workspace.getLeavesOfType(VIEW_TYPE_TODO)[0];
     if (!leaf) {
       leaf = workspace.getLeaf(true);
-      await leaf.setViewState({ type: VIEW_TYPE_TODO, active: true });
     }
-    workspace.setActiveLeaf(leaf, true, true);
+    await leaf.setViewState({ type: VIEW_TYPE_TODO, active: true });
   }
 };

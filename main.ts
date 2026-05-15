@@ -87,6 +87,15 @@ function logError(message: string, error: unknown): void {
   console.error(message, error);
 }
 
+function loadSavedSettings(data: unknown): TodoSettings {
+  const saved = data && typeof data === "object" ? data as Partial<TodoSettings> : {};
+  return {
+    todos: Array.isArray(saved.todos) ? saved.todos : [],
+    trash: Array.isArray(saved.trash) ? saved.trash : [],
+    boardZones: Array.isArray(saved.boardZones) ? saved.boardZones : [],
+  };
+}
+
 // ─── TodoModal ────────────────────────────────────────────────────────────────
 
 class TodoModal extends Modal {
@@ -809,35 +818,38 @@ class TodoSettingTab extends PluginSettingTab {
 export default class SimpleTodoPlugin extends Plugin {
   settings: TodoSettings = DEFAULT_SETTINGS;
 
-  async onload() {
-    await this.loadSettings();
-    this.registerView(VIEW_TYPE_TODO, leaf => new TodoView(leaf, this));
-    this.addRibbonIcon("check-square", "待办清单", () => {
-      void this.activateView().catch((error: unknown) => logError("Failed to activate todo view", error));
-    });
-    this.addCommand({
-      id: "open-todo-list",
-      name: "打开待办清单",
-      callback: () => {
-        void this.activateView().catch((error: unknown) => logError("Failed to activate todo view", error));
-      },
-    });
-    this.addCommand({
-      id: "add-todo-item", name: "新建待办事项",
-      callback: () => {
-        void this.activateView().then(() => {
-          const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_TODO)[0]?.view as TodoView | undefined;
-          if (view) view.openAddTaskModal();
-        }).catch((error: unknown) => logError("Failed to open add task modal", error));
-      },
-    });
-    this.addSettingTab(new TodoSettingTab(this.app, this));
+  onload(): void {
+    void this.loadSettings()
+      .then(() => {
+        this.registerView(VIEW_TYPE_TODO, leaf => new TodoView(leaf, this));
+        this.addRibbonIcon("check-square", "待办清单", () => {
+          void this.activateView().catch((error: unknown) => logError("Failed to activate todo view", error));
+        });
+        this.addCommand({
+          id: "open-todo-list",
+          name: "打开待办清单",
+          callback: () => {
+            void this.activateView().catch((error: unknown) => logError("Failed to activate todo view", error));
+          },
+        });
+        this.addCommand({
+          id: "add-todo-item", name: "新建待办事项",
+          callback: () => {
+            void this.activateView().then(() => {
+              const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_TODO)[0]?.view as TodoView | undefined;
+              if (view) view.openAddTaskModal();
+            }).catch((error: unknown) => logError("Failed to open add task modal", error));
+          },
+        });
+        this.addSettingTab(new TodoSettingTab(this.app, this));
+      })
+      .catch((error: unknown) => logError("Failed to load todo plugin", error));
   }
 
-  async onunload() { }
+  onunload(): void { }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = loadSavedSettings(await this.loadData());
     if (!this.settings.boardZones) this.settings.boardZones = [];
     // migrate: ensure order field exists
     this.settings.boardZones.forEach((z, i) => { if (z.order === undefined) z.order = i; });
@@ -850,8 +862,7 @@ export default class SimpleTodoPlugin extends Plugin {
     let leaf = workspace.getLeavesOfType(VIEW_TYPE_TODO)[0];
     if (!leaf) {
       leaf = workspace.getLeaf(true);
-      await leaf.setViewState({ type: VIEW_TYPE_TODO, active: true });
     }
-    workspace.setActiveLeaf(leaf, true, true);
+    await leaf.setViewState({ type: VIEW_TYPE_TODO, active: true });
   }
 }
