@@ -76,6 +76,9 @@ function formatZoneHeader(zone) {
     return (0, import_obsidian.moment)(zone.date, "YYYY-MM-DD").format("ddd");
   return (0, import_obsidian.moment)(zone.date, "YYYY-MM-DD").format("M\u6708D\u65E5");
 }
+function logError(message, error) {
+  console.error(message, error);
+}
 var TodoModal = class extends import_obsidian.Modal {
   constructor(app, item, onSubmit, isEdit = false) {
     super(app);
@@ -293,13 +296,16 @@ var TodoView = class extends import_obsidian.ItemView {
       }
     });
     panel.addEventListener("dragleave", () => panel.removeClass("todo-panel-dragover"));
-    panel.addEventListener("drop", async (e) => {
+    panel.addEventListener("drop", (e) => {
       e.preventDefault();
       panel.removeClass("todo-panel-dragover");
       if (this.dragTaskId && this.dragTaskSourceZoneId) {
-        await this.removeTaskFromZone(this.dragTaskId, this.dragTaskSourceZoneId);
-        this.dragTaskId = null;
-        this.dragTaskSourceZoneId = null;
+        const taskId = this.dragTaskId;
+        const sourceZoneId = this.dragTaskSourceZoneId;
+        void this.removeTaskFromZone(taskId, sourceZoneId).then(() => {
+          this.dragTaskId = null;
+          this.dragTaskSourceZoneId = null;
+        }).catch((error) => logError("Failed to remove task from zone", error));
       }
     });
     const list = panel.createDiv("todo-list");
@@ -353,10 +359,10 @@ var TodoView = class extends import_obsidian.ItemView {
     });
     row.addEventListener("dragend", () => row.removeClass("todo-item-dragging"));
     const cb = row.createEl("button", { cls: "todo-checkbox" });
-    cb.innerHTML = `<svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/></svg>`;
+    (0, import_obsidian.setIcon)(cb, "circle");
     cb.addEventListener("click", (e) => {
       e.stopPropagation();
-      this.completeTask(item.id);
+      void this.completeTask(item.id).catch((error) => logError("Failed to complete task", error));
     });
     const content = row.createDiv("todo-item-content");
     if (!inZone) {
@@ -381,7 +387,7 @@ var TodoView = class extends import_obsidian.ItemView {
     });
     actions.createEl("button", { cls: "todo-action-btn", text: "\u{1F5D1}\uFE0F" }).addEventListener("click", (e) => {
       e.stopPropagation();
-      this.deleteTask(item.id);
+      void this.deleteTask(item.id).catch((error) => logError("Failed to delete task", error));
     });
   }
   // ── Right panel: board ───────────────────────────────────────────────────────
@@ -432,18 +438,23 @@ var TodoView = class extends import_obsidian.ItemView {
       if (this.dragZoneOverId === zone.id)
         this.dragZoneOverId = null;
     });
-    card.addEventListener("drop", async (e) => {
+    card.addEventListener("drop", (e) => {
       e.preventDefault();
       card.removeClass("todo-zone-card-dragover");
       card.removeClass("todo-zone-card-zone-over");
       if (this.dragZoneId && this.dragZoneId !== zone.id) {
-        await this.reorderZone(this.dragZoneId, zone.id);
-        this.dragZoneId = null;
-        this.dragZoneOverId = null;
+        const draggedId = this.dragZoneId;
+        void this.reorderZone(draggedId, zone.id).then(() => {
+          this.dragZoneId = null;
+          this.dragZoneOverId = null;
+        }).catch((error) => logError("Failed to reorder zone", error));
       } else if (this.dragTaskId) {
-        await this.assignTaskToZone(this.dragTaskId, this.dragTaskSourceZoneId, zone.id);
-        this.dragTaskId = null;
-        this.dragTaskSourceZoneId = null;
+        const taskId = this.dragTaskId;
+        const sourceZoneId = this.dragTaskSourceZoneId;
+        void this.assignTaskToZone(taskId, sourceZoneId, zone.id).then(() => {
+          this.dragTaskId = null;
+          this.dragTaskSourceZoneId = null;
+        }).catch((error) => logError("Failed to assign task to zone", error));
       }
     });
     const header = card.createDiv("todo-zone-header");
@@ -481,7 +492,7 @@ var TodoView = class extends import_obsidian.ItemView {
     });
     headerRight.createEl("button", { cls: "todo-zone-action-btn todo-zone-delete-btn", text: "\u2715" }).addEventListener("click", (e) => {
       e.stopPropagation();
-      this.deleteZone(zone.id);
+      void this.deleteZone(zone.id).catch((error) => logError("Failed to delete zone", error));
     });
     const body = card.createDiv("todo-zone-body");
     const assignedTodos = zone.todoIds.map((id) => this.plugin.settings.todos.find((t) => t.id === id)).filter((t) => !!t);
@@ -510,10 +521,10 @@ var TodoView = class extends import_obsidian.ItemView {
     });
     row.addEventListener("dragend", () => row.removeClass("todo-item-dragging"));
     const cb = row.createEl("button", { cls: "todo-checkbox todo-checkbox-sm" });
-    cb.innerHTML = `<svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/></svg>`;
+    (0, import_obsidian.setIcon)(cb, "circle");
     cb.addEventListener("click", (e) => {
       e.stopPropagation();
-      this.completeTask(item.id);
+      void this.completeTask(item.id).catch((error) => logError("Failed to complete task", error));
     });
     const content = row.createDiv("todo-zone-item-content");
     const titleRow = content.createDiv("todo-zone-item-title-row");
@@ -546,14 +557,16 @@ var TodoView = class extends import_obsidian.ItemView {
       return;
     }
     const toolbar = body.createDiv("todo-trash-toolbar");
-    toolbar.createEl("button", { text: "\u6E05\u7A7A\u5DF2\u5B8C\u6210", cls: "todo-clear-btn" }).addEventListener("click", () => this.clearTrash());
+    toolbar.createEl("button", { text: "\u6E05\u7A7A\u5DF2\u5B8C\u6210", cls: "todo-clear-btn" }).addEventListener("click", () => {
+      void this.clearTrash().catch((error) => logError("Failed to clear completed tasks", error));
+    });
     items.forEach((item) => {
       const row = body.createDiv("todo-item todo-item-done");
       const cb = row.createEl("button", { cls: "todo-checkbox todo-checkbox-done" });
-      cb.innerHTML = `<svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="currentColor" fill-opacity="0.15" stroke="currentColor" stroke-width="1.5"/><path d="M5 8l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      (0, import_obsidian.setIcon)(cb, "check-circle-2");
       cb.addEventListener("click", (e) => {
         e.stopPropagation();
-        this.restoreTask(item.id);
+        void this.restoreTask(item.id).catch((error) => logError("Failed to restore task", error));
       });
       const content = row.createDiv("todo-item-content");
       content.createDiv("todo-item-title-row").createEl("span", { text: item.title, cls: "todo-item-title todo-item-title-done" });
@@ -566,13 +579,13 @@ var TodoView = class extends import_obsidian.ItemView {
       const actions = row.createDiv("todo-item-actions");
       actions.createEl("button", { cls: "todo-action-btn", text: "\u{1F5D1}\uFE0F" }).addEventListener("click", (e) => {
         e.stopPropagation();
-        this.permanentDelete(item.id);
+        void this.permanentDelete(item.id).catch((error) => logError("Failed to permanently delete task", error));
       });
     });
   }
   // ── Data actions ─────────────────────────────────────────────────────────────
   openAddTaskModal() {
-    new TodoModal(this.app, { priority: "medium" }, async (data) => {
+    new TodoModal(this.app, { priority: "medium" }, (data) => {
       var _a, _b, _c;
       this.plugin.settings.todos.unshift({
         id: generateId(),
@@ -584,39 +597,35 @@ var TodoView = class extends import_obsidian.ItemView {
         completedAt: null,
         createdAt: new Date().toISOString()
       });
-      await this.plugin.saveSettings();
-      this.render();
+      void this.plugin.saveSettings().then(() => this.render()).catch((error) => logError("Failed to add task", error));
     }).open();
   }
   openEditTaskModal(item) {
-    new TodoModal(this.app, item, async (data) => {
+    new TodoModal(this.app, item, (data) => {
       var _a, _b, _c;
       const idx = this.plugin.settings.todos.findIndex((t) => t.id === item.id);
       if (idx === -1)
         return;
       this.plugin.settings.todos[idx] = { ...this.plugin.settings.todos[idx], title: data.title, note: (_a = data.note) != null ? _a : "", dueDate: (_b = data.dueDate) != null ? _b : null, priority: (_c = data.priority) != null ? _c : "medium" };
-      await this.plugin.saveSettings();
-      this.render();
+      void this.plugin.saveSettings().then(() => this.render()).catch((error) => logError("Failed to edit task", error));
     }, true).open();
   }
   openAddZoneModal() {
-    new ZoneModal(this.app, {}, async (data) => {
+    new ZoneModal(this.app, {}, (data) => {
       var _a;
       const maxOrder = this.plugin.settings.boardZones.reduce((m, z) => Math.max(m, z.order), -1);
       this.plugin.settings.boardZones.push({ id: generateId(), date: data.date, label: (_a = data.label) != null ? _a : "", todoIds: [], order: maxOrder + 1 });
-      await this.plugin.saveSettings();
-      this.render();
+      void this.plugin.saveSettings().then(() => this.render()).catch((error) => logError("Failed to add zone", error));
     }).open();
   }
   openEditZoneModal(zone) {
-    new ZoneModal(this.app, zone, async (data) => {
+    new ZoneModal(this.app, zone, (data) => {
       var _a;
       const idx = this.plugin.settings.boardZones.findIndex((z) => z.id === zone.id);
       if (idx === -1)
         return;
       this.plugin.settings.boardZones[idx] = { ...this.plugin.settings.boardZones[idx], date: data.date, label: (_a = data.label) != null ? _a : "" };
-      await this.plugin.saveSettings();
-      this.render();
+      void this.plugin.saveSettings().then(() => this.render()).catch((error) => logError("Failed to edit zone", error));
     }, true).open();
   }
   async deleteZone(zoneId) {
@@ -723,12 +732,11 @@ var TodoSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("\u6570\u636E\u7EDF\u8BA1").setDesc(
       `\u5F85\u529E\uFF1A${this.plugin.settings.todos.length} \u9879 | \u5DF2\u5B8C\u6210\uFF1A${this.plugin.settings.trash.length} \u9879 | \u5206\u533A\uFF1A${this.plugin.settings.boardZones.length} \u4E2A`
     );
-    new import_obsidian.Setting(containerEl).setName("\u6E05\u7A7A\u6240\u6709\u6570\u636E").setDesc("\u5220\u9664\u6240\u6709\u5F85\u529E\u3001\u5DF2\u5B8C\u6210\u4E8B\u9879\u548C\u5206\u533A\uFF0C\u4E0D\u53EF\u64A4\u9500\u3002").addButton((btn) => btn.setButtonText("\u6E05\u7A7A").setWarning().onClick(async () => {
+    new import_obsidian.Setting(containerEl).setName("\u6E05\u7A7A\u6240\u6709\u6570\u636E").setDesc("\u5220\u9664\u6240\u6709\u5F85\u529E\u3001\u5DF2\u5B8C\u6210\u4E8B\u9879\u548C\u5206\u533A\uFF0C\u4E0D\u53EF\u64A4\u9500\u3002").addButton((btn) => btn.setButtonText("\u6E05\u7A7A").setWarning().onClick(() => {
       this.plugin.settings.todos = [];
       this.plugin.settings.trash = [];
       this.plugin.settings.boardZones = [];
-      await this.plugin.saveSettings();
-      this.display();
+      void this.plugin.saveSettings().then(() => this.display()).catch((error) => logError("Failed to clear settings data", error));
     }));
   }
 };
@@ -740,17 +748,27 @@ var SimpleTodoPlugin = class extends import_obsidian.Plugin {
   async onload() {
     await this.loadSettings();
     this.registerView(VIEW_TYPE_TODO, (leaf) => new TodoView(leaf, this));
-    this.addRibbonIcon("check-square", "\u5F85\u529E\u6E05\u5355", () => this.activateView());
-    this.addCommand({ id: "open-todo-list", name: "\u6253\u5F00\u5F85\u529E\u6E05\u5355", callback: () => this.activateView() });
+    this.addRibbonIcon("check-square", "\u5F85\u529E\u6E05\u5355", () => {
+      void this.activateView().catch((error) => logError("Failed to activate todo view", error));
+    });
+    this.addCommand({
+      id: "open-todo-list",
+      name: "\u6253\u5F00\u5F85\u529E\u6E05\u5355",
+      callback: () => {
+        void this.activateView().catch((error) => logError("Failed to activate todo view", error));
+      }
+    });
     this.addCommand({
       id: "add-todo-item",
       name: "\u65B0\u5EFA\u5F85\u529E\u4E8B\u9879",
-      callback: () => this.activateView().then(() => {
-        var _a;
-        const view = (_a = this.app.workspace.getLeavesOfType(VIEW_TYPE_TODO)[0]) == null ? void 0 : _a.view;
-        if (view)
-          view.openAddTaskModal();
-      })
+      callback: () => {
+        void this.activateView().then(() => {
+          var _a;
+          const view = (_a = this.app.workspace.getLeavesOfType(VIEW_TYPE_TODO)[0]) == null ? void 0 : _a.view;
+          if (view)
+            view.openAddTaskModal();
+        }).catch((error) => logError("Failed to open add task modal", error));
+      }
     });
     this.addSettingTab(new TodoSettingTab(this.app, this));
   }
@@ -769,13 +787,12 @@ var SimpleTodoPlugin = class extends import_obsidian.Plugin {
     await this.saveData(this.settings);
   }
   async activateView() {
-    var _a;
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(VIEW_TYPE_TODO)[0];
     if (!leaf) {
-      leaf = (_a = workspace.getRightLeaf(false)) != null ? _a : workspace.getLeaf(true);
+      leaf = workspace.getLeaf(true);
       await leaf.setViewState({ type: VIEW_TYPE_TODO, active: true });
     }
-    workspace.revealLeaf(leaf);
+    workspace.setActiveLeaf(leaf, true, true);
   }
 };

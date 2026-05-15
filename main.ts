@@ -7,6 +7,7 @@ import {
   WorkspaceLeaf,
   Modal,
   moment,
+  setIcon,
 } from "obsidian";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -80,6 +81,10 @@ function formatZoneHeader(zone: BoardZone): string {
   if (diff === -1) return "昨天";
   if (diff > 1 && diff <= 6) return moment(zone.date, "YYYY-MM-DD").format("ddd");
   return moment(zone.date, "YYYY-MM-DD").format("M月D日");
+}
+
+function logError(message: string, error: unknown): void {
+  console.error(message, error);
 }
 
 // ─── TodoModal ────────────────────────────────────────────────────────────────
@@ -320,13 +325,18 @@ class TodoView extends ItemView {
       }
     });
     panel.addEventListener("dragleave", () => panel.removeClass("todo-panel-dragover"));
-    panel.addEventListener("drop", async (e) => {
+    panel.addEventListener("drop", (e) => {
       e.preventDefault();
       panel.removeClass("todo-panel-dragover");
       if (this.dragTaskId && this.dragTaskSourceZoneId) {
-        await this.removeTaskFromZone(this.dragTaskId, this.dragTaskSourceZoneId);
-        this.dragTaskId = null;
-        this.dragTaskSourceZoneId = null;
+        const taskId = this.dragTaskId;
+        const sourceZoneId = this.dragTaskSourceZoneId;
+        void this.removeTaskFromZone(taskId, sourceZoneId)
+          .then(() => {
+            this.dragTaskId = null;
+            this.dragTaskSourceZoneId = null;
+          })
+          .catch((error: unknown) => logError("Failed to remove task from zone", error));
       }
     });
 
@@ -378,8 +388,11 @@ class TodoView extends ItemView {
 
     // Checkbox
     const cb = row.createEl("button", { cls: "todo-checkbox" });
-    cb.innerHTML = `<svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/></svg>`;
-    cb.addEventListener("click", (e) => { e.stopPropagation(); this.completeTask(item.id); });
+    setIcon(cb, "circle");
+    cb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void this.completeTask(item.id).catch((error: unknown) => logError("Failed to complete task", error));
+    });
 
     // Content wrapper (relative, so the dot can be positioned)
     const content = row.createDiv("todo-item-content");
@@ -406,7 +419,10 @@ class TodoView extends ItemView {
     actions.createEl("button", { cls: "todo-action-btn", text: "✏️" })
       .addEventListener("click", (e) => { e.stopPropagation(); this.openEditTaskModal(item); });
     actions.createEl("button", { cls: "todo-action-btn", text: "🗑️" })
-      .addEventListener("click", (e) => { e.stopPropagation(); this.deleteTask(item.id); });
+      .addEventListener("click", (e) => {
+        e.stopPropagation();
+        void this.deleteTask(item.id).catch((error: unknown) => logError("Failed to delete task", error));
+      });
   }
 
   // ── Right panel: board ───────────────────────────────────────────────────────
@@ -462,21 +478,30 @@ class TodoView extends ItemView {
       card.removeClass("todo-zone-card-zone-over");
       if (this.dragZoneOverId === zone.id) this.dragZoneOverId = null;
     });
-    card.addEventListener("drop", async (e) => {
+    card.addEventListener("drop", (e) => {
       e.preventDefault();
       card.removeClass("todo-zone-card-dragover");
       card.removeClass("todo-zone-card-zone-over");
 
       if (this.dragZoneId && this.dragZoneId !== zone.id) {
         // Reorder zones
-        await this.reorderZone(this.dragZoneId, zone.id);
-        this.dragZoneId = null;
-        this.dragZoneOverId = null;
+        const draggedId = this.dragZoneId;
+        void this.reorderZone(draggedId, zone.id)
+          .then(() => {
+            this.dragZoneId = null;
+            this.dragZoneOverId = null;
+          })
+          .catch((error: unknown) => logError("Failed to reorder zone", error));
       } else if (this.dragTaskId) {
         // Assign task to zone
-        await this.assignTaskToZone(this.dragTaskId, this.dragTaskSourceZoneId, zone.id);
-        this.dragTaskId = null;
-        this.dragTaskSourceZoneId = null;
+        const taskId = this.dragTaskId;
+        const sourceZoneId = this.dragTaskSourceZoneId;
+        void this.assignTaskToZone(taskId, sourceZoneId, zone.id)
+          .then(() => {
+            this.dragTaskId = null;
+            this.dragTaskSourceZoneId = null;
+          })
+          .catch((error: unknown) => logError("Failed to assign task to zone", error));
       }
     });
 
@@ -512,7 +537,10 @@ class TodoView extends ItemView {
     headerRight.createEl("button", { cls: "todo-zone-action-btn", text: "✏️" })
       .addEventListener("click", (e) => { e.stopPropagation(); this.openEditZoneModal(zone); });
     headerRight.createEl("button", { cls: "todo-zone-action-btn todo-zone-delete-btn", text: "✕" })
-      .addEventListener("click", (e) => { e.stopPropagation(); this.deleteZone(zone.id); });
+      .addEventListener("click", (e) => {
+        e.stopPropagation();
+        void this.deleteZone(zone.id).catch((error: unknown) => logError("Failed to delete zone", error));
+      });
 
     // ── Zone body ─────────────────────────────────────────────────────────────
     const body = card.createDiv("todo-zone-body");
@@ -546,8 +574,11 @@ class TodoView extends ItemView {
     row.addEventListener("dragend", () => row.removeClass("todo-item-dragging"));
 
     const cb = row.createEl("button", { cls: "todo-checkbox todo-checkbox-sm" });
-    cb.innerHTML = `<svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/></svg>`;
-    cb.addEventListener("click", (e) => { e.stopPropagation(); this.completeTask(item.id); });
+    setIcon(cb, "circle");
+    cb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void this.completeTask(item.id).catch((error: unknown) => logError("Failed to complete task", error));
+    });
 
     const content = row.createDiv("todo-zone-item-content");
     const titleRow = content.createDiv("todo-zone-item-title-row");
@@ -585,13 +616,18 @@ class TodoView extends ItemView {
 
     const toolbar = body.createDiv("todo-trash-toolbar");
     toolbar.createEl("button", { text: "清空已完成", cls: "todo-clear-btn" })
-      .addEventListener("click", () => this.clearTrash());
+      .addEventListener("click", () => {
+        void this.clearTrash().catch((error: unknown) => logError("Failed to clear completed tasks", error));
+      });
 
     items.forEach(item => {
       const row = body.createDiv("todo-item todo-item-done");
       const cb = row.createEl("button", { cls: "todo-checkbox todo-checkbox-done" });
-      cb.innerHTML = `<svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="currentColor" fill-opacity="0.15" stroke="currentColor" stroke-width="1.5"/><path d="M5 8l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-      cb.addEventListener("click", (e) => { e.stopPropagation(); this.restoreTask(item.id); });
+      setIcon(cb, "check-circle-2");
+      cb.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void this.restoreTask(item.id).catch((error: unknown) => logError("Failed to restore task", error));
+      });
 
       const content = row.createDiv("todo-item-content");
       content.createDiv("todo-item-title-row").createEl("span", { text: item.title, cls: "todo-item-title todo-item-title-done" });
@@ -604,50 +640,57 @@ class TodoView extends ItemView {
 
       const actions = row.createDiv("todo-item-actions");
       actions.createEl("button", { cls: "todo-action-btn", text: "🗑️" })
-        .addEventListener("click", (e) => { e.stopPropagation(); this.permanentDelete(item.id); });
+        .addEventListener("click", (e) => {
+          e.stopPropagation();
+          void this.permanentDelete(item.id).catch((error: unknown) => logError("Failed to permanently delete task", error));
+        });
     });
   }
 
   // ── Data actions ─────────────────────────────────────────────────────────────
 
-  private openAddTaskModal() {
-    new TodoModal(this.app, { priority: "medium" }, async (data) => {
+  openAddTaskModal(): void {
+    new TodoModal(this.app, { priority: "medium" }, (data) => {
       this.plugin.settings.todos.unshift({
         id: generateId(), title: data.title!, note: data.note ?? "",
         dueDate: data.dueDate ?? null, priority: data.priority ?? "medium",
         completed: false, completedAt: null, createdAt: new Date().toISOString(),
       });
-      await this.plugin.saveSettings();
-      this.render();
+      void this.plugin.saveSettings()
+        .then(() => this.render())
+        .catch((error: unknown) => logError("Failed to add task", error));
     }).open();
   }
 
   private openEditTaskModal(item: TodoItem) {
-    new TodoModal(this.app, item, async (data) => {
+    new TodoModal(this.app, item, (data) => {
       const idx = this.plugin.settings.todos.findIndex(t => t.id === item.id);
       if (idx === -1) return;
       this.plugin.settings.todos[idx] = { ...this.plugin.settings.todos[idx], title: data.title!, note: data.note ?? "", dueDate: data.dueDate ?? null, priority: data.priority ?? "medium" };
-      await this.plugin.saveSettings();
-      this.render();
+      void this.plugin.saveSettings()
+        .then(() => this.render())
+        .catch((error: unknown) => logError("Failed to edit task", error));
     }, true).open();
   }
 
   private openAddZoneModal() {
-    new ZoneModal(this.app, {}, async (data) => {
+    new ZoneModal(this.app, {}, (data) => {
       const maxOrder = this.plugin.settings.boardZones.reduce((m, z) => Math.max(m, z.order), -1);
       this.plugin.settings.boardZones.push({ id: generateId(), date: data.date!, label: data.label ?? "", todoIds: [], order: maxOrder + 1 });
-      await this.plugin.saveSettings();
-      this.render();
+      void this.plugin.saveSettings()
+        .then(() => this.render())
+        .catch((error: unknown) => logError("Failed to add zone", error));
     }).open();
   }
 
   private openEditZoneModal(zone: BoardZone) {
-    new ZoneModal(this.app, zone, async (data) => {
+    new ZoneModal(this.app, zone, (data) => {
       const idx = this.plugin.settings.boardZones.findIndex(z => z.id === zone.id);
       if (idx === -1) return;
       this.plugin.settings.boardZones[idx] = { ...this.plugin.settings.boardZones[idx], date: data.date!, label: data.label ?? "" };
-      await this.plugin.saveSettings();
-      this.render();
+      void this.plugin.saveSettings()
+        .then(() => this.render())
+        .catch((error: unknown) => logError("Failed to edit zone", error));
     }, true).open();
   }
 
@@ -750,12 +793,13 @@ class TodoSettingTab extends PluginSettingTab {
     );
 
     new Setting(containerEl).setName("清空所有数据").setDesc("删除所有待办、已完成事项和分区，不可撤销。")
-      .addButton(btn => btn.setButtonText("清空").setWarning().onClick(async () => {
+      .addButton(btn => btn.setButtonText("清空").setWarning().onClick(() => {
         this.plugin.settings.todos = [];
         this.plugin.settings.trash = [];
         this.plugin.settings.boardZones = [];
-        await this.plugin.saveSettings();
-        this.display();
+        void this.plugin.saveSettings()
+          .then(() => this.display())
+          .catch((error: unknown) => logError("Failed to clear settings data", error));
       }));
   }
 }
@@ -768,14 +812,24 @@ export default class SimpleTodoPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
     this.registerView(VIEW_TYPE_TODO, leaf => new TodoView(leaf, this));
-    this.addRibbonIcon("check-square", "待办清单", () => this.activateView());
-    this.addCommand({ id: "open-todo-list", name: "打开待办清单", callback: () => this.activateView() });
+    this.addRibbonIcon("check-square", "待办清单", () => {
+      void this.activateView().catch((error: unknown) => logError("Failed to activate todo view", error));
+    });
+    this.addCommand({
+      id: "open-todo-list",
+      name: "打开待办清单",
+      callback: () => {
+        void this.activateView().catch((error: unknown) => logError("Failed to activate todo view", error));
+      },
+    });
     this.addCommand({
       id: "add-todo-item", name: "新建待办事项",
-      callback: () => this.activateView().then(() => {
-        const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_TODO)[0]?.view as TodoView | undefined;
-        if (view) (view as any).openAddTaskModal();
-      }),
+      callback: () => {
+        void this.activateView().then(() => {
+          const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_TODO)[0]?.view as TodoView | undefined;
+          if (view) view.openAddTaskModal();
+        }).catch((error: unknown) => logError("Failed to open add task modal", error));
+      },
     });
     this.addSettingTab(new TodoSettingTab(this.app, this));
   }
@@ -795,9 +849,9 @@ export default class SimpleTodoPlugin extends Plugin {
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(VIEW_TYPE_TODO)[0];
     if (!leaf) {
-      leaf = workspace.getRightLeaf(false) ?? workspace.getLeaf(true);
+      leaf = workspace.getLeaf(true);
       await leaf.setViewState({ type: VIEW_TYPE_TODO, active: true });
     }
-    workspace.revealLeaf(leaf);
+    workspace.setActiveLeaf(leaf, true, true);
   }
 }
