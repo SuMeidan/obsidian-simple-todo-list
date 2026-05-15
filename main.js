@@ -719,7 +719,7 @@ var TodoSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "\u5F85\u529E\u6E05\u5355\u8BBE\u7F6E" });
+    new import_obsidian.Setting(containerEl).setName("\u5F85\u529E\u6E05\u5355\u8BBE\u7F6E").setHeading();
     new import_obsidian.Setting(containerEl).setName("\u6570\u636E\u7EDF\u8BA1").setDesc(
       `\u5F85\u529E\uFF1A${this.plugin.settings.todos.length} \u9879 | \u5DF2\u5B8C\u6210\uFF1A${this.plugin.settings.trash.length} \u9879 | \u5206\u533A\uFF1A${this.plugin.settings.boardZones.length} \u4E2A`
     );
@@ -755,7 +755,6 @@ var SimpleTodoPlugin = class extends import_obsidian.Plugin {
     this.addSettingTab(new TodoSettingTab(this.app, this));
   }
   async onunload() {
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_TODO);
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());

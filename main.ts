@@ -743,7 +743,7 @@ class TodoSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "待办清单设置" });
+    new Setting(containerEl).setName("待办清单设置").setHeading();
 
     new Setting(containerEl).setName("数据统计").setDesc(
       `待办：${this.plugin.settings.todos.length} 项 | 已完成：${this.plugin.settings.trash.length} 项 | 分区：${this.plugin.settings.boardZones.length} 个`
@@ -780,7 +780,7 @@ export default class SimpleTodoPlugin extends Plugin {
     this.addSettingTab(new TodoSettingTab(this.app, this));
   }
 
-  async onunload() { this.app.workspace.detachLeavesOfType(VIEW_TYPE_TODO); }
+  async onunload() { }
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());

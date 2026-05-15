@@ -5,6 +5,6 @@
   "minAppVersion": "0.15.0",
   "description": "A clean todo list with planning board. Write tasks, set deadlines, set priority, and drag tasks into date zones.",
   "author": "Selene Su",
-  "authorUrl": "https://github.com/SuMeidan",
+  "authorUrl": "https://github.com/SuMeidan/obsidian-simple-todo-list",
   "isDesktopOnly": false
 }
