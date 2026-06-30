@@ -31,12 +31,15 @@ export interface BoardZone {
   label: string;
   todoIds: string[];
   order: number;     // for drag-reorder of zones
+  width?: number;
+  height?: number;
 }
 
 export interface TodoSettings {
   todos: TodoItem[];
   trash: TodoItem[];
   boardZones: BoardZone[];
+  todoPanelWidth?: number;
 }
 
 const DEFAULT_SETTINGS: TodoSettings = { todos: [], trash: [], boardZones: [] };
@@ -93,6 +96,7 @@ function loadSavedSettings(data: unknown): TodoSettings {
     todos: Array.isArray(saved.todos) ? saved.todos : [],
     trash: Array.isArray(saved.trash) ? saved.trash : [],
     boardZones: Array.isArray(saved.boardZones) ? saved.boardZones : [],
+    todoPanelWidth: typeof saved.todoPanelWidth === "number" ? saved.todoPanelWidth : undefined,
   };
 }
 
@@ -102,6 +106,7 @@ class TodoModal extends Modal {
   private item: Partial<TodoItem>;
   private onSubmit: (item: Partial<TodoItem>) => void;
   private isEdit: boolean;
+  private submitted = false;
 
   constructor(app: App, item: Partial<TodoItem>, onSubmit: (item: Partial<TodoItem>) => void, isEdit = false) {
     super(app);
@@ -147,14 +152,55 @@ class TodoModal extends Modal {
       .addEventListener("click", () => this.close());
 
     const submit = () => {
+      if (this.submitted) return;
       const title = titleInput.value.trim();
       if (!title) { titleInput.addClass("todo-input-error"); titleInput.focus(); return; }
-      this.onSubmit({ title, note: noteInput.value.trim(), dueDate: dateInput.value || null, priority: prioSelect.value as Priority });
+      this.submitted = true;
       this.close();
+      this.onSubmit({ title, note: noteInput.value.trim(), dueDate: dateInput.value || null, priority: prioSelect.value as Priority });
     };
     btnRow.createEl("button", { text: this.isEdit ? "保存" : "添加", cls: "todo-modal-btn todo-modal-btn-submit" })
       .addEventListener("click", submit);
-    titleInput.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+    titleInput.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      e.stopPropagation();
+      submit();
+    });
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
+// ─── NoteModal ────────────────────────────────────────────────────────────────
+
+class NoteModal extends Modal {
+  private item: TodoItem;
+
+  constructor(app: App, item: TodoItem) {
+    super(app);
+    this.item = item;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("todo-modal");
+    contentEl.createEl("h2", { text: "查看备注", cls: "todo-modal-title" });
+
+    const header = contentEl.createDiv("todo-note-header");
+    header.createEl("div", { text: this.item.title, cls: "todo-note-title" });
+    const meta = header.createDiv("todo-note-meta");
+    meta.createEl("span", { text: `优先级：${PRIORITY_LABELS[this.item.priority]}` });
+    if (this.item.dueDate) meta.createEl("span", { text: `截止：${formatDueDate(this.item.dueDate)}` });
+
+    const note = contentEl.createDiv("todo-note-content");
+    note.setText(this.item.note || "暂无备注");
+    if (!this.item.note) note.addClass("todo-note-empty");
+
+    const btnRow = contentEl.createDiv("todo-modal-buttons");
+    btnRow.createEl("button", { text: "关闭", cls: "todo-modal-btn todo-modal-btn-submit" })
+      .addEventListener("click", () => this.close());
   }
 
   onClose() { this.contentEl.empty(); }
@@ -232,6 +278,9 @@ class TodoView extends ItemView {
   private dragZoneId: string | null = null;
   private dragZoneOverId: string | null = null;
 
+  // custom user-driven zone resize
+  private activeZoneResizeCleanup: (() => void) | null = null;
+
   constructor(leaf: WorkspaceLeaf, plugin: SimpleTodoPlugin) {
     super(leaf);
     this.plugin = plugin;
@@ -242,7 +291,7 @@ class TodoView extends ItemView {
   getIcon()        { return "check-square"; }
 
   async onOpen()  { this.render(); }
-  async onClose() {}
+  async onClose() { this.stopActiveZoneResize(); }
 
   // ── Full render (called on tab switch / init) ────────────────────────────────
 
@@ -256,6 +305,7 @@ class TodoView extends ItemView {
     if (this.activeTab === "main") {
       const body = root.createDiv("todo-main-body");
       this.renderTodoPanel(body);
+      this.renderPanelResizeHandle(body);
       this.renderBoardPanel(body);
     } else {
       this.renderTrashPanel(root);
@@ -324,6 +374,7 @@ class TodoView extends ItemView {
 
   private renderTodoPanel(parent: HTMLElement) {
     const panel = parent.createDiv("todo-panel");
+    if (this.plugin.settings.todoPanelWidth) panel.style.width = `${this.plugin.settings.todoPanelWidth}px`;
     panel.createEl("div", { text: "待办事项", cls: "todo-panel-title" });
 
     // Drop zone: drag task back from a zone to "unassigned"
@@ -352,6 +403,49 @@ class TodoView extends ItemView {
     const list = panel.createDiv("todo-list");
     this.todoListEl = list;
     this.fillTodoList(list);
+  }
+
+  private renderPanelResizeHandle(parent: HTMLElement) {
+    const handle = parent.createDiv("todo-panel-resize-handle");
+    handle.setAttribute("aria-label", "拖动调整任务栏和分区栏宽度");
+    handle.addEventListener("pointerdown", (e) => this.startPanelResize(e));
+  }
+
+  private startPanelResize(e: PointerEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const panel = this.containerEl.querySelector(".todo-panel") as HTMLElement | null;
+    const body = this.containerEl.querySelector(".todo-main-body") as HTMLElement | null;
+    if (!panel || !body) return;
+
+    const startX = e.clientX;
+    const startWidth = panel.offsetWidth;
+    const minWidth = 180;
+    const maxWidth = Math.max(minWidth, body.clientWidth - 260);
+
+    body.addClass("todo-panel-resizing");
+
+    const onMove = (moveEvent: PointerEvent) => {
+      moveEvent.preventDefault();
+      const width = Math.min(maxWidth, Math.max(minWidth, Math.round(startWidth + moveEvent.clientX - startX)));
+      panel.style.width = `${width}px`;
+    };
+
+    const finish = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", finish);
+      document.removeEventListener("pointercancel", finish);
+      body.removeClass("todo-panel-resizing");
+      const width = Math.min(maxWidth, Math.max(minWidth, Math.round(panel.offsetWidth)));
+      if (this.plugin.settings.todoPanelWidth === width) return;
+      this.plugin.settings.todoPanelWidth = width;
+      void this.plugin.saveSettings().catch((error: unknown) => logError("Failed to save panel width", error));
+    };
+
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", finish);
+    document.addEventListener("pointercancel", finish);
   }
 
   private fillTodoList(list: HTMLElement) {
@@ -415,23 +509,26 @@ class TodoView extends ItemView {
     titleRow.createEl("span", { text: item.title, cls: "todo-item-title" });
     titleRow.createEl("span", { text: PRIORITY_LABELS[item.priority], cls: `todo-priority-badge todo-priority-${item.priority}` });
 
-    if (item.dueDate || item.note) {
+    if (item.dueDate) {
       const meta = content.createDiv("todo-item-meta");
-      if (item.dueDate) {
-        const cls = isOverdue(item.dueDate) ? "todo-due-overdue" : isDueSoon(item.dueDate) ? "todo-due-soon" : "todo-due-normal";
-        meta.createEl("span", { text: `📅 ${formatDueDate(item.dueDate)}`, cls: `todo-due ${cls}` });
-      }
-      if (item.note) meta.createEl("span", { text: item.note, cls: "todo-item-note" });
+      const cls = isOverdue(item.dueDate) ? "todo-due-overdue" : isDueSoon(item.dueDate) ? "todo-due-soon" : "todo-due-normal";
+      meta.createEl("span", { text: `📅 ${formatDueDate(item.dueDate)}`, cls: `todo-due ${cls}` });
     }
 
     const actions = row.createDiv("todo-item-actions");
-    actions.createEl("button", { cls: "todo-action-btn", text: "✏️" })
-      .addEventListener("click", (e) => { e.stopPropagation(); this.openEditTaskModal(item); });
-    actions.createEl("button", { cls: "todo-action-btn", text: "🗑️" })
-      .addEventListener("click", (e) => {
-        e.stopPropagation();
-        void this.deleteTask(item.id).catch((error: unknown) => logError("Failed to delete task", error));
-      });
+    const noteBtn = actions.createEl("button", { cls: "todo-action-btn todo-note-btn", attr: { "aria-label": "查看备注", title: "查看备注" } });
+    if (item.note) noteBtn.addClass("todo-note-btn-has-note");
+    setIcon(noteBtn, "sticky-note");
+    noteBtn.addEventListener("click", (e) => { e.stopPropagation(); this.openTaskNoteModal(item); });
+    const editBtn = actions.createEl("button", { cls: "todo-action-btn", attr: { "aria-label": "编辑任务", title: "编辑任务" } });
+    setIcon(editBtn, "pencil");
+    editBtn.addEventListener("click", (e) => { e.stopPropagation(); this.openEditTaskModal(item); });
+    const deleteBtn = actions.createEl("button", { cls: "todo-action-btn todo-delete-btn", attr: { "aria-label": "删除任务", title: "删除任务" } });
+    setIcon(deleteBtn, "trash-2");
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void this.deleteTask(item.id).catch((error: unknown) => logError("Failed to delete task", error));
+    });
   }
 
   // ── Right panel: board ───────────────────────────────────────────────────────
@@ -465,6 +562,8 @@ class TodoView extends ItemView {
 
     const card = parent.createDiv("todo-zone-card");
     card.dataset.zoneId = zone.id;
+    if (zone.width) card.style.width = `${zone.width}px`;
+    if (zone.height) card.style.height = `${zone.height}px`;
     if (isPast)  card.addClass("todo-zone-past");
     if (isToday) card.addClass("todo-zone-today");
 
@@ -476,7 +575,7 @@ class TodoView extends ItemView {
         this.dragZoneOverId = zone.id;
         card.addClass("todo-zone-card-zone-over");
         if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-      } else if (this.dragTaskId) {
+      } else if (this.dragTaskId && this.dragTaskSourceZoneId !== zone.id) {
         // task drop
         card.addClass("todo-zone-card-dragover");
         if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
@@ -501,7 +600,7 @@ class TodoView extends ItemView {
             this.dragZoneOverId = null;
           })
           .catch((error: unknown) => logError("Failed to reorder zone", error));
-      } else if (this.dragTaskId) {
+      } else if (this.dragTaskId && this.dragTaskSourceZoneId !== zone.id) {
         // Assign task to zone
         const taskId = this.dragTaskId;
         const sourceZoneId = this.dragTaskSourceZoneId;
@@ -566,12 +665,15 @@ class TodoView extends ItemView {
     } else {
       assignedTodos.forEach(item => this.renderZoneTaskRow(body, item, zone.id));
     }
+
+    this.installZoneResizeHandle(card, zone);
   }
 
   private renderZoneTaskRow(parent: HTMLElement, item: TodoItem, zoneId: string) {
     const row = parent.createDiv("todo-zone-item");
     row.dataset.id = item.id;
     row.setAttribute("draggable", "true");
+    if (isOverdue(item.dueDate)) row.addClass("todo-zone-item-overdue");
 
     row.addEventListener("dragstart", (e) => {
       this.dragTaskId = item.id;
@@ -580,7 +682,34 @@ class TodoView extends ItemView {
       if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", item.id); }
       e.stopPropagation();
     });
-    row.addEventListener("dragend", () => row.removeClass("todo-item-dragging"));
+    row.addEventListener("dragend", () => {
+      row.removeClass("todo-item-dragging");
+      this.dragTaskId = null;
+      this.dragTaskSourceZoneId = null;
+    });
+    row.addEventListener("dragover", (e) => {
+      if (!this.dragTaskId || this.dragTaskId === item.id || this.dragZoneId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      row.addClass("todo-zone-item-over");
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    });
+    row.addEventListener("dragleave", () => row.removeClass("todo-zone-item-over"));
+    row.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      row.removeClass("todo-zone-item-over");
+      if (!this.dragTaskId || this.dragTaskId === item.id) return;
+      const taskId = this.dragTaskId;
+      const sourceZoneId = this.dragTaskSourceZoneId;
+      void this.assignTaskToZone(taskId, sourceZoneId, zoneId, item.id)
+        .then(() => {
+          this.dragTaskId = null;
+          this.dragTaskSourceZoneId = null;
+        })
+        .catch((error: unknown) => logError("Failed to reorder zone task", error));
+    });
+    row.addEventListener("click", () => this.openTaskNoteModal(item));
 
     const cb = row.createEl("button", { cls: "todo-checkbox todo-checkbox-sm" });
     setIcon(cb, "circle");
@@ -593,6 +722,27 @@ class TodoView extends ItemView {
     const titleRow = content.createDiv("todo-zone-item-title-row");
     titleRow.createEl("span", { text: item.title, cls: "todo-zone-item-title" });
     titleRow.createEl("span", { text: PRIORITY_LABELS[item.priority], cls: `todo-priority-badge todo-priority-${item.priority}` });
+
+    if (item.dueDate) {
+      const meta = content.createDiv("todo-zone-item-meta");
+      const cls = isOverdue(item.dueDate) ? "todo-due-overdue" : isDueSoon(item.dueDate) ? "todo-due-soon" : "todo-due-normal";
+      meta.createEl("span", { text: `📅 ${formatDueDate(item.dueDate)}`, cls: `todo-due ${cls}` });
+    }
+
+    const actions = row.createDiv("todo-zone-item-actions");
+    const noteBtn = actions.createEl("button", { cls: "todo-action-btn todo-note-btn", attr: { "aria-label": "查看备注", title: "查看备注" } });
+    if (item.note) noteBtn.addClass("todo-note-btn-has-note");
+    setIcon(noteBtn, "sticky-note");
+    noteBtn.addEventListener("click", (e) => { e.stopPropagation(); this.openTaskNoteModal(item); });
+    const editBtn = actions.createEl("button", { cls: "todo-action-btn", attr: { "aria-label": "编辑任务", title: "编辑任务" } });
+    setIcon(editBtn, "pencil");
+    editBtn.addEventListener("click", (e) => { e.stopPropagation(); this.openEditTaskModal(item); });
+    const deleteBtn = actions.createEl("button", { cls: "todo-action-btn todo-delete-btn", attr: { "aria-label": "删除任务", title: "删除任务" } });
+    setIcon(deleteBtn, "trash-2");
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void this.deleteTask(item.id).catch((error: unknown) => logError("Failed to delete task", error));
+    });
 
     // drag-out hint icon
     const dragHint = row.createEl("span", { cls: "todo-zone-drag-hint", text: "⠿" });
@@ -682,6 +832,10 @@ class TodoView extends ItemView {
     }, true).open();
   }
 
+  private openTaskNoteModal(item: TodoItem) {
+    new NoteModal(this.app, item).open();
+  }
+
   private openAddZoneModal() {
     new ZoneModal(this.app, {}, (data) => {
       const maxOrder = this.plugin.settings.boardZones.reduce((m, z) => Math.max(m, z.order), -1);
@@ -722,16 +876,80 @@ class TodoView extends ItemView {
     this.render();
   }
 
-  private async assignTaskToZone(taskId: string, sourceZoneId: string | null, targetZoneId: string) {
-    if (sourceZoneId === targetZoneId) return;
+  private async assignTaskToZone(taskId: string, sourceZoneId: string | null, targetZoneId: string, beforeTaskId?: string) {
+    if (sourceZoneId === targetZoneId && !beforeTaskId) return;
     if (sourceZoneId) {
       const src = this.plugin.settings.boardZones.find(z => z.id === sourceZoneId);
       if (src) src.todoIds = src.todoIds.filter(id => id !== taskId);
     }
     const target = this.plugin.settings.boardZones.find(z => z.id === targetZoneId);
-    if (target && !target.todoIds.includes(taskId)) target.todoIds.push(taskId);
+    if (!target) return;
+
+    target.todoIds = target.todoIds.filter(id => id !== taskId);
+    const targetIndex = beforeTaskId ? target.todoIds.indexOf(beforeTaskId) : -1;
+    if (targetIndex === -1) {
+      target.todoIds.push(taskId);
+    } else {
+      target.todoIds.splice(targetIndex, 0, taskId);
+    }
     await this.plugin.saveSettings();
     this.render();
+  }
+
+  private installZoneResizeHandle(card: HTMLElement, zone: BoardZone) {
+    const handle = card.createDiv("todo-zone-resize-handle");
+    handle.setAttribute("aria-label", "拖动调整分区大小");
+    handle.addEventListener("pointerdown", (e) => this.startZoneResize(e, card, zone));
+  }
+
+  private startZoneResize(e: PointerEvent, card: HTMLElement, zone: BoardZone) {
+    e.preventDefault();
+    e.stopPropagation();
+    this.stopActiveZoneResize();
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startWidth = card.offsetWidth;
+    const startHeight = card.offsetHeight;
+    const minWidth = 150;
+    const minHeight = 120;
+
+    card.addClass("todo-zone-resizing");
+
+    const onMove = (moveEvent: PointerEvent) => {
+      moveEvent.preventDefault();
+      const width = Math.max(minWidth, Math.round(startWidth + moveEvent.clientX - startX));
+      const height = Math.max(minHeight, Math.round(startHeight + moveEvent.clientY - startY));
+      card.style.width = `${width}px`;
+      card.style.height = `${height}px`;
+    };
+
+    const finish = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", finish);
+      document.removeEventListener("pointercancel", finish);
+      card.removeClass("todo-zone-resizing");
+      this.activeZoneResizeCleanup = null;
+
+      const width = Math.max(minWidth, Math.round(card.offsetWidth));
+      const height = Math.max(minHeight, Math.round(card.offsetHeight));
+      const savedZone = this.plugin.settings.boardZones.find(z => z.id === zone.id);
+      if (!savedZone) return;
+      if (savedZone.width === width && savedZone.height === height) return;
+      savedZone.width = width;
+      savedZone.height = height;
+      void this.plugin.saveSettings().catch((error: unknown) => logError("Failed to save zone size", error));
+    };
+
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", finish);
+    document.addEventListener("pointercancel", finish);
+    this.activeZoneResizeCleanup = finish;
+  }
+
+  private stopActiveZoneResize() {
+    if (!this.activeZoneResizeCleanup) return;
+    this.activeZoneResizeCleanup();
   }
 
   private async removeTaskFromZone(taskId: string, zoneId: string) {
@@ -823,11 +1041,18 @@ export default class SimpleTodoPlugin extends Plugin {
       .then(() => {
         this.registerView(VIEW_TYPE_TODO, leaf => new TodoView(leaf, this));
         this.addRibbonIcon("check-square", "待办清单", () => {
-          void this.activateView().catch((error: unknown) => logError("Failed to activate todo view", error));
+          void this.activateViewInRightSidebar().catch((error: unknown) => logError("Failed to activate todo view", error));
         });
         this.addCommand({
           id: "open-todo-list",
-          name: "打开待办清单",
+          name: "在右侧边栏打开待办清单",
+          callback: () => {
+            void this.activateViewInRightSidebar().catch((error: unknown) => logError("Failed to activate todo view", error));
+          },
+        });
+        this.addCommand({
+          id: "open-todo-list-main-workspace",
+          name: "在主工作区打开待办清单",
           callback: () => {
             void this.activateView().catch((error: unknown) => logError("Failed to activate todo view", error));
           },
@@ -835,9 +1060,9 @@ export default class SimpleTodoPlugin extends Plugin {
         this.addCommand({
           id: "add-todo-item", name: "新建待办事项",
           callback: () => {
-            void this.activateView().then(() => {
-              const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_TODO)[0]?.view as TodoView | undefined;
-              if (view) view.openAddTaskModal();
+            void this.activateViewInRightSidebar().then((leaf) => {
+              const view = leaf.view as TodoView | undefined;
+              view?.openAddTaskModal();
             }).catch((error: unknown) => logError("Failed to open add task modal", error));
           },
         });
@@ -857,12 +1082,23 @@ export default class SimpleTodoPlugin extends Plugin {
 
   async saveSettings() { await this.saveData(this.settings); }
 
-  async activateView(): Promise<void> {
+  async activateView(): Promise<WorkspaceLeaf> {
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(VIEW_TYPE_TODO)[0];
     if (!leaf) {
       leaf = workspace.getLeaf(true);
     }
     await leaf.setViewState({ type: VIEW_TYPE_TODO, active: true });
+    await workspace.revealLeaf(leaf);
+    return leaf;
+  }
+
+  async activateViewInRightSidebar(): Promise<WorkspaceLeaf> {
+    const { workspace } = this.app;
+    const leaf = workspace.getRightLeaf(false) ?? workspace.getLeaf(true);
+    await leaf.setViewState({ type: VIEW_TYPE_TODO, active: true });
+    workspace.rightSplit.expand();
+    await workspace.revealLeaf(leaf);
+    return leaf;
   }
 }

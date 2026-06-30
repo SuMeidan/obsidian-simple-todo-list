@@ -84,12 +84,14 @@ function loadSavedSettings(data) {
   return {
     todos: Array.isArray(saved.todos) ? saved.todos : [],
     trash: Array.isArray(saved.trash) ? saved.trash : [],
-    boardZones: Array.isArray(saved.boardZones) ? saved.boardZones : []
+    boardZones: Array.isArray(saved.boardZones) ? saved.boardZones : [],
+    todoPanelWidth: typeof saved.todoPanelWidth === "number" ? saved.todoPanelWidth : void 0
   };
 }
 var TodoModal = class extends import_obsidian.Modal {
   constructor(app, item, onSubmit, isEdit = false) {
     super(app);
+    this.submitted = false;
     this.item = { ...item };
     this.onSubmit = onSubmit;
     this.isEdit = isEdit;
@@ -129,20 +131,53 @@ var TodoModal = class extends import_obsidian.Modal {
     const btnRow = contentEl.createDiv("todo-modal-buttons");
     btnRow.createEl("button", { text: "\u53D6\u6D88", cls: "todo-modal-btn todo-modal-btn-cancel" }).addEventListener("click", () => this.close());
     const submit = () => {
+      if (this.submitted)
+        return;
       const title = titleInput.value.trim();
       if (!title) {
         titleInput.addClass("todo-input-error");
         titleInput.focus();
         return;
       }
-      this.onSubmit({ title, note: noteInput.value.trim(), dueDate: dateInput.value || null, priority: prioSelect.value });
+      this.submitted = true;
       this.close();
+      this.onSubmit({ title, note: noteInput.value.trim(), dueDate: dateInput.value || null, priority: prioSelect.value });
     };
     btnRow.createEl("button", { text: this.isEdit ? "\u4FDD\u5B58" : "\u6DFB\u52A0", cls: "todo-modal-btn todo-modal-btn-submit" }).addEventListener("click", submit);
     titleInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter")
-        submit();
+      if (e.key !== "Enter")
+        return;
+      e.preventDefault();
+      e.stopPropagation();
+      submit();
     });
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var NoteModal = class extends import_obsidian.Modal {
+  constructor(app, item) {
+    super(app);
+    this.item = item;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("todo-modal");
+    contentEl.createEl("h2", { text: "\u67E5\u770B\u5907\u6CE8", cls: "todo-modal-title" });
+    const header = contentEl.createDiv("todo-note-header");
+    header.createEl("div", { text: this.item.title, cls: "todo-note-title" });
+    const meta = header.createDiv("todo-note-meta");
+    meta.createEl("span", { text: `\u4F18\u5148\u7EA7\uFF1A${PRIORITY_LABELS[this.item.priority]}` });
+    if (this.item.dueDate)
+      meta.createEl("span", { text: `\u622A\u6B62\uFF1A${formatDueDate(this.item.dueDate)}` });
+    const note = contentEl.createDiv("todo-note-content");
+    note.setText(this.item.note || "\u6682\u65E0\u5907\u6CE8");
+    if (!this.item.note)
+      note.addClass("todo-note-empty");
+    const btnRow = contentEl.createDiv("todo-modal-buttons");
+    btnRow.createEl("button", { text: "\u5173\u95ED", cls: "todo-modal-btn todo-modal-btn-submit" }).addEventListener("click", () => this.close());
   }
   onClose() {
     this.contentEl.empty();
@@ -211,6 +246,8 @@ var TodoView = class extends import_obsidian.ItemView {
     // drag: zone reorder
     this.dragZoneId = null;
     this.dragZoneOverId = null;
+    // custom user-driven zone resize
+    this.activeZoneResizeCleanup = null;
     this.plugin = plugin;
   }
   getViewType() {
@@ -226,6 +263,7 @@ var TodoView = class extends import_obsidian.ItemView {
     this.render();
   }
   async onClose() {
+    this.stopActiveZoneResize();
   }
   // ── Full render (called on tab switch / init) ────────────────────────────────
   render() {
@@ -236,6 +274,7 @@ var TodoView = class extends import_obsidian.ItemView {
     if (this.activeTab === "main") {
       const body = root.createDiv("todo-main-body");
       this.renderTodoPanel(body);
+      this.renderPanelResizeHandle(body);
       this.renderBoardPanel(body);
     } else {
       this.renderTrashPanel(root);
@@ -296,6 +335,8 @@ var TodoView = class extends import_obsidian.ItemView {
   // ── Left panel: todo list ────────────────────────────────────────────────────
   renderTodoPanel(parent) {
     const panel = parent.createDiv("todo-panel");
+    if (this.plugin.settings.todoPanelWidth)
+      panel.style.width = `${this.plugin.settings.todoPanelWidth}px`;
     panel.createEl("div", { text: "\u5F85\u529E\u4E8B\u9879", cls: "todo-panel-title" });
     panel.addEventListener("dragover", (e) => {
       if (this.dragTaskId && this.dragTaskSourceZoneId) {
@@ -319,6 +360,43 @@ var TodoView = class extends import_obsidian.ItemView {
     const list = panel.createDiv("todo-list");
     this.todoListEl = list;
     this.fillTodoList(list);
+  }
+  renderPanelResizeHandle(parent) {
+    const handle = parent.createDiv("todo-panel-resize-handle");
+    handle.setAttribute("aria-label", "\u62D6\u52A8\u8C03\u6574\u4EFB\u52A1\u680F\u548C\u5206\u533A\u680F\u5BBD\u5EA6");
+    handle.addEventListener("pointerdown", (e) => this.startPanelResize(e));
+  }
+  startPanelResize(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const panel = this.containerEl.querySelector(".todo-panel");
+    const body = this.containerEl.querySelector(".todo-main-body");
+    if (!panel || !body)
+      return;
+    const startX = e.clientX;
+    const startWidth = panel.offsetWidth;
+    const minWidth = 180;
+    const maxWidth = Math.max(minWidth, body.clientWidth - 260);
+    body.addClass("todo-panel-resizing");
+    const onMove = (moveEvent) => {
+      moveEvent.preventDefault();
+      const width = Math.min(maxWidth, Math.max(minWidth, Math.round(startWidth + moveEvent.clientX - startX)));
+      panel.style.width = `${width}px`;
+    };
+    const finish = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", finish);
+      document.removeEventListener("pointercancel", finish);
+      body.removeClass("todo-panel-resizing");
+      const width = Math.min(maxWidth, Math.max(minWidth, Math.round(panel.offsetWidth)));
+      if (this.plugin.settings.todoPanelWidth === width)
+        return;
+      this.plugin.settings.todoPanelWidth = width;
+      void this.plugin.saveSettings().catch((error) => logError("Failed to save panel width", error));
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", finish);
+    document.addEventListener("pointercancel", finish);
   }
   fillTodoList(list) {
     list.empty();
@@ -379,21 +457,29 @@ var TodoView = class extends import_obsidian.ItemView {
     const titleRow = content.createDiv("todo-item-title-row");
     titleRow.createEl("span", { text: item.title, cls: "todo-item-title" });
     titleRow.createEl("span", { text: PRIORITY_LABELS[item.priority], cls: `todo-priority-badge todo-priority-${item.priority}` });
-    if (item.dueDate || item.note) {
+    if (item.dueDate) {
       const meta = content.createDiv("todo-item-meta");
-      if (item.dueDate) {
-        const cls = isOverdue(item.dueDate) ? "todo-due-overdue" : isDueSoon(item.dueDate) ? "todo-due-soon" : "todo-due-normal";
-        meta.createEl("span", { text: `\u{1F4C5} ${formatDueDate(item.dueDate)}`, cls: `todo-due ${cls}` });
-      }
-      if (item.note)
-        meta.createEl("span", { text: item.note, cls: "todo-item-note" });
+      const cls = isOverdue(item.dueDate) ? "todo-due-overdue" : isDueSoon(item.dueDate) ? "todo-due-soon" : "todo-due-normal";
+      meta.createEl("span", { text: `\u{1F4C5} ${formatDueDate(item.dueDate)}`, cls: `todo-due ${cls}` });
     }
     const actions = row.createDiv("todo-item-actions");
-    actions.createEl("button", { cls: "todo-action-btn", text: "\u270F\uFE0F" }).addEventListener("click", (e) => {
+    const noteBtn = actions.createEl("button", { cls: "todo-action-btn todo-note-btn", attr: { "aria-label": "\u67E5\u770B\u5907\u6CE8", title: "\u67E5\u770B\u5907\u6CE8" } });
+    if (item.note)
+      noteBtn.addClass("todo-note-btn-has-note");
+    (0, import_obsidian.setIcon)(noteBtn, "sticky-note");
+    noteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.openTaskNoteModal(item);
+    });
+    const editBtn = actions.createEl("button", { cls: "todo-action-btn", attr: { "aria-label": "\u7F16\u8F91\u4EFB\u52A1", title: "\u7F16\u8F91\u4EFB\u52A1" } });
+    (0, import_obsidian.setIcon)(editBtn, "pencil");
+    editBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       this.openEditTaskModal(item);
     });
-    actions.createEl("button", { cls: "todo-action-btn", text: "\u{1F5D1}\uFE0F" }).addEventListener("click", (e) => {
+    const deleteBtn = actions.createEl("button", { cls: "todo-action-btn todo-delete-btn", attr: { "aria-label": "\u5220\u9664\u4EFB\u52A1", title: "\u5220\u9664\u4EFB\u52A1" } });
+    (0, import_obsidian.setIcon)(deleteBtn, "trash-2");
+    deleteBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       void this.deleteTask(item.id).catch((error) => logError("Failed to delete task", error));
     });
@@ -423,6 +509,10 @@ var TodoView = class extends import_obsidian.ItemView {
     const isToday = zone.date === today;
     const card = parent.createDiv("todo-zone-card");
     card.dataset.zoneId = zone.id;
+    if (zone.width)
+      card.style.width = `${zone.width}px`;
+    if (zone.height)
+      card.style.height = `${zone.height}px`;
     if (isPast)
       card.addClass("todo-zone-past");
     if (isToday)
@@ -434,7 +524,7 @@ var TodoView = class extends import_obsidian.ItemView {
         card.addClass("todo-zone-card-zone-over");
         if (e.dataTransfer)
           e.dataTransfer.dropEffect = "move";
-      } else if (this.dragTaskId) {
+      } else if (this.dragTaskId && this.dragTaskSourceZoneId !== zone.id) {
         card.addClass("todo-zone-card-dragover");
         if (e.dataTransfer)
           e.dataTransfer.dropEffect = "move";
@@ -456,7 +546,7 @@ var TodoView = class extends import_obsidian.ItemView {
           this.dragZoneId = null;
           this.dragZoneOverId = null;
         }).catch((error) => logError("Failed to reorder zone", error));
-      } else if (this.dragTaskId) {
+      } else if (this.dragTaskId && this.dragTaskSourceZoneId !== zone.id) {
         const taskId = this.dragTaskId;
         const sourceZoneId = this.dragTaskSourceZoneId;
         void this.assignTaskToZone(taskId, sourceZoneId, zone.id).then(() => {
@@ -512,11 +602,14 @@ var TodoView = class extends import_obsidian.ItemView {
     } else {
       assignedTodos.forEach((item) => this.renderZoneTaskRow(body, item, zone.id));
     }
+    this.installZoneResizeHandle(card, zone);
   }
   renderZoneTaskRow(parent, item, zoneId) {
     const row = parent.createDiv("todo-zone-item");
     row.dataset.id = item.id;
     row.setAttribute("draggable", "true");
+    if (isOverdue(item.dueDate))
+      row.addClass("todo-zone-item-overdue");
     row.addEventListener("dragstart", (e) => {
       this.dragTaskId = item.id;
       this.dragTaskSourceZoneId = zoneId;
@@ -527,7 +620,35 @@ var TodoView = class extends import_obsidian.ItemView {
       }
       e.stopPropagation();
     });
-    row.addEventListener("dragend", () => row.removeClass("todo-item-dragging"));
+    row.addEventListener("dragend", () => {
+      row.removeClass("todo-item-dragging");
+      this.dragTaskId = null;
+      this.dragTaskSourceZoneId = null;
+    });
+    row.addEventListener("dragover", (e) => {
+      if (!this.dragTaskId || this.dragTaskId === item.id || this.dragZoneId)
+        return;
+      e.preventDefault();
+      e.stopPropagation();
+      row.addClass("todo-zone-item-over");
+      if (e.dataTransfer)
+        e.dataTransfer.dropEffect = "move";
+    });
+    row.addEventListener("dragleave", () => row.removeClass("todo-zone-item-over"));
+    row.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      row.removeClass("todo-zone-item-over");
+      if (!this.dragTaskId || this.dragTaskId === item.id)
+        return;
+      const taskId = this.dragTaskId;
+      const sourceZoneId = this.dragTaskSourceZoneId;
+      void this.assignTaskToZone(taskId, sourceZoneId, zoneId, item.id).then(() => {
+        this.dragTaskId = null;
+        this.dragTaskSourceZoneId = null;
+      }).catch((error) => logError("Failed to reorder zone task", error));
+    });
+    row.addEventListener("click", () => this.openTaskNoteModal(item));
     const cb = row.createEl("button", { cls: "todo-checkbox todo-checkbox-sm" });
     (0, import_obsidian.setIcon)(cb, "circle");
     cb.addEventListener("click", (e) => {
@@ -538,6 +659,32 @@ var TodoView = class extends import_obsidian.ItemView {
     const titleRow = content.createDiv("todo-zone-item-title-row");
     titleRow.createEl("span", { text: item.title, cls: "todo-zone-item-title" });
     titleRow.createEl("span", { text: PRIORITY_LABELS[item.priority], cls: `todo-priority-badge todo-priority-${item.priority}` });
+    if (item.dueDate) {
+      const meta = content.createDiv("todo-zone-item-meta");
+      const cls = isOverdue(item.dueDate) ? "todo-due-overdue" : isDueSoon(item.dueDate) ? "todo-due-soon" : "todo-due-normal";
+      meta.createEl("span", { text: `\u{1F4C5} ${formatDueDate(item.dueDate)}`, cls: `todo-due ${cls}` });
+    }
+    const actions = row.createDiv("todo-zone-item-actions");
+    const noteBtn = actions.createEl("button", { cls: "todo-action-btn todo-note-btn", attr: { "aria-label": "\u67E5\u770B\u5907\u6CE8", title: "\u67E5\u770B\u5907\u6CE8" } });
+    if (item.note)
+      noteBtn.addClass("todo-note-btn-has-note");
+    (0, import_obsidian.setIcon)(noteBtn, "sticky-note");
+    noteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.openTaskNoteModal(item);
+    });
+    const editBtn = actions.createEl("button", { cls: "todo-action-btn", attr: { "aria-label": "\u7F16\u8F91\u4EFB\u52A1", title: "\u7F16\u8F91\u4EFB\u52A1" } });
+    (0, import_obsidian.setIcon)(editBtn, "pencil");
+    editBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.openEditTaskModal(item);
+    });
+    const deleteBtn = actions.createEl("button", { cls: "todo-action-btn todo-delete-btn", attr: { "aria-label": "\u5220\u9664\u4EFB\u52A1", title: "\u5220\u9664\u4EFB\u52A1" } });
+    (0, import_obsidian.setIcon)(deleteBtn, "trash-2");
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void this.deleteTask(item.id).catch((error) => logError("Failed to delete task", error));
+    });
     const dragHint = row.createEl("span", { cls: "todo-zone-drag-hint", text: "\u283F" });
     dragHint.setAttribute("aria-hidden", "true");
   }
@@ -618,6 +765,9 @@ var TodoView = class extends import_obsidian.ItemView {
       void this.plugin.saveSettings().then(() => this.render()).catch((error) => logError("Failed to edit task", error));
     }, true).open();
   }
+  openTaskNoteModal(item) {
+    new NoteModal(this.app, item).open();
+  }
   openAddZoneModal() {
     new ZoneModal(this.app, {}, (data) => {
       var _a;
@@ -656,8 +806,8 @@ var TodoView = class extends import_obsidian.ItemView {
     await this.plugin.saveSettings();
     this.render();
   }
-  async assignTaskToZone(taskId, sourceZoneId, targetZoneId) {
-    if (sourceZoneId === targetZoneId)
+  async assignTaskToZone(taskId, sourceZoneId, targetZoneId, beforeTaskId) {
+    if (sourceZoneId === targetZoneId && !beforeTaskId)
       return;
     if (sourceZoneId) {
       const src = this.plugin.settings.boardZones.find((z) => z.id === sourceZoneId);
@@ -665,10 +815,67 @@ var TodoView = class extends import_obsidian.ItemView {
         src.todoIds = src.todoIds.filter((id) => id !== taskId);
     }
     const target = this.plugin.settings.boardZones.find((z) => z.id === targetZoneId);
-    if (target && !target.todoIds.includes(taskId))
+    if (!target)
+      return;
+    target.todoIds = target.todoIds.filter((id) => id !== taskId);
+    const targetIndex = beforeTaskId ? target.todoIds.indexOf(beforeTaskId) : -1;
+    if (targetIndex === -1) {
       target.todoIds.push(taskId);
+    } else {
+      target.todoIds.splice(targetIndex, 0, taskId);
+    }
     await this.plugin.saveSettings();
     this.render();
+  }
+  installZoneResizeHandle(card, zone) {
+    const handle = card.createDiv("todo-zone-resize-handle");
+    handle.setAttribute("aria-label", "\u62D6\u52A8\u8C03\u6574\u5206\u533A\u5927\u5C0F");
+    handle.addEventListener("pointerdown", (e) => this.startZoneResize(e, card, zone));
+  }
+  startZoneResize(e, card, zone) {
+    e.preventDefault();
+    e.stopPropagation();
+    this.stopActiveZoneResize();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startWidth = card.offsetWidth;
+    const startHeight = card.offsetHeight;
+    const minWidth = 150;
+    const minHeight = 120;
+    card.addClass("todo-zone-resizing");
+    const onMove = (moveEvent) => {
+      moveEvent.preventDefault();
+      const width = Math.max(minWidth, Math.round(startWidth + moveEvent.clientX - startX));
+      const height = Math.max(minHeight, Math.round(startHeight + moveEvent.clientY - startY));
+      card.style.width = `${width}px`;
+      card.style.height = `${height}px`;
+    };
+    const finish = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", finish);
+      document.removeEventListener("pointercancel", finish);
+      card.removeClass("todo-zone-resizing");
+      this.activeZoneResizeCleanup = null;
+      const width = Math.max(minWidth, Math.round(card.offsetWidth));
+      const height = Math.max(minHeight, Math.round(card.offsetHeight));
+      const savedZone = this.plugin.settings.boardZones.find((z) => z.id === zone.id);
+      if (!savedZone)
+        return;
+      if (savedZone.width === width && savedZone.height === height)
+        return;
+      savedZone.width = width;
+      savedZone.height = height;
+      void this.plugin.saveSettings().catch((error) => logError("Failed to save zone size", error));
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", finish);
+    document.addEventListener("pointercancel", finish);
+    this.activeZoneResizeCleanup = finish;
+  }
+  stopActiveZoneResize() {
+    if (!this.activeZoneResizeCleanup)
+      return;
+    this.activeZoneResizeCleanup();
   }
   async removeTaskFromZone(taskId, zoneId) {
     const zone = this.plugin.settings.boardZones.find((z) => z.id === zoneId);
@@ -757,11 +964,18 @@ var SimpleTodoPlugin = class extends import_obsidian.Plugin {
     void this.loadSettings().then(() => {
       this.registerView(VIEW_TYPE_TODO, (leaf) => new TodoView(leaf, this));
       this.addRibbonIcon("check-square", "\u5F85\u529E\u6E05\u5355", () => {
-        void this.activateView().catch((error) => logError("Failed to activate todo view", error));
+        void this.activateViewInRightSidebar().catch((error) => logError("Failed to activate todo view", error));
       });
       this.addCommand({
         id: "open-todo-list",
-        name: "\u6253\u5F00\u5F85\u529E\u6E05\u5355",
+        name: "\u5728\u53F3\u4FA7\u8FB9\u680F\u6253\u5F00\u5F85\u529E\u6E05\u5355",
+        callback: () => {
+          void this.activateViewInRightSidebar().catch((error) => logError("Failed to activate todo view", error));
+        }
+      });
+      this.addCommand({
+        id: "open-todo-list-main-workspace",
+        name: "\u5728\u4E3B\u5DE5\u4F5C\u533A\u6253\u5F00\u5F85\u529E\u6E05\u5355",
         callback: () => {
           void this.activateView().catch((error) => logError("Failed to activate todo view", error));
         }
@@ -770,11 +984,9 @@ var SimpleTodoPlugin = class extends import_obsidian.Plugin {
         id: "add-todo-item",
         name: "\u65B0\u5EFA\u5F85\u529E\u4E8B\u9879",
         callback: () => {
-          void this.activateView().then(() => {
-            var _a;
-            const view = (_a = this.app.workspace.getLeavesOfType(VIEW_TYPE_TODO)[0]) == null ? void 0 : _a.view;
-            if (view)
-              view.openAddTaskModal();
+          void this.activateViewInRightSidebar().then((leaf) => {
+            const view = leaf.view;
+            view == null ? void 0 : view.openAddTaskModal();
           }).catch((error) => logError("Failed to open add task modal", error));
         }
       });
@@ -802,5 +1014,16 @@ var SimpleTodoPlugin = class extends import_obsidian.Plugin {
       leaf = workspace.getLeaf(true);
     }
     await leaf.setViewState({ type: VIEW_TYPE_TODO, active: true });
+    await workspace.revealLeaf(leaf);
+    return leaf;
+  }
+  async activateViewInRightSidebar() {
+    var _a;
+    const { workspace } = this.app;
+    const leaf = (_a = workspace.getRightLeaf(false)) != null ? _a : workspace.getLeaf(true);
+    await leaf.setViewState({ type: VIEW_TYPE_TODO, active: true });
+    workspace.rightSplit.expand();
+    await workspace.revealLeaf(leaf);
+    return leaf;
   }
 };
